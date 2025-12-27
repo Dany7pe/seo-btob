@@ -1,0 +1,420 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum UserRole {
+  SUPER_ADMIN   // Toi - accès total
+  CLIENT_ADMIN  // Admin d'un client
+  CLIENT_EDITOR // Rédacteur d'un client
+  CLIENT_VIEWER // Lecture seule
+}
+
+enum CMSType {
+  WORDPRESS
+  WEBFLOW
+  SHOPIFY
+}
+
+enum ArticleStatus {
+  DRAFT
+  REVIEW
+  APPROVED
+  SCHEDULED
+  PUBLISHED
+  NEEDS_UPDATE
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum OptimizationType {
+  MISSING_KEYWORD
+  KEYWORD_DENSITY_LOW
+  KEYWORD_DENSITY_HIGH
+  TITLE_TOO_SHORT
+  TITLE_TOO_LONG
+  TITLE_MISSING_KEYWORD
+  META_MISSING
+  META_TOO_SHORT
+  META_TOO_LONG
+  CONTENT_TOO_SHORT
+  NO_H2
+  NO_H3
+  NO_INTERNAL_LINKS
+  NO_EXTERNAL_LINKS
+  NO_IMAGES
+  CONTENT_DECAY
+  QUICK_WIN
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum OptimizationStatus {
+  PENDING
+  IN_PROGRESS
+  DONE
+  IGNORED
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  PAUSED
+}
+
+enum UsageType {
+  GENERATION
+  OPTIMIZATION
+  ANALYSIS
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+}
+
+// ============================================
+// USERS & AUTH
+// ============================================
+
+model User {
+  id            String    @id @default(cuid())
+  clerkId       String    @unique
+  email         String    @unique
+  firstName     String?
+  lastName      String?
+  imageUrl      String?
+  role          UserRole  @default(CLIENT_EDITOR)
+
+  // Relations
+  clientUsers   ClientUser[]
+  articlesCreated Article[] @relation("ArticleCreator")
+  invitesSent   Invite[]  @relation("InviteSender")
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// ============================================
+// CLIENTS (Entreprises B2B)
+// ============================================
+
+model Client {
+  id            String    @id @default(cuid())
+  name          String
+  slug          String    @unique
+  website       String
+  logo          String?
+
+  // Configuration CMS (credentials chiffrés)
+  cmsType       CMSType?
+  cmsConfig     Json?
+
+  // Configuration IA
+  brandVoice    String?   @db.Text
+  targetAudience String?  @db.Text
+  keywords      String[]
+
+  // Relations
+  users         ClientUser[]
+  prompts       Prompt[]
+  articles      Article[]
+  generationJobs GenerationJob[]
+  subscription  Subscription?
+  usageLogs     UsageLog[]
+  invites       Invite[]
+
+  // Metadata
+  isActive      Boolean   @default(true)
+  onboardedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// Relation Many-to-Many User <-> Client avec rôle
+model ClientUser {
+  id            String    @id @default(cuid())
+
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  clientId      String
+  client        Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  role          UserRole  @default(CLIENT_EDITOR)
+
+  createdAt     DateTime  @default(now())
+
+  @@unique([userId, clientId])
+}
+
+// ============================================
+// INVITATIONS
+// ============================================
+
+model Invite {
+  id            String       @id @default(cuid())
+  email         String
+  role          UserRole     @default(CLIENT_EDITOR)
+  token         String       @unique @default(cuid())
+  status        InviteStatus @default(PENDING)
+
+  clientId      String
+  client        Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  invitedById   String
+  invitedBy     User         @relation("InviteSender", fields: [invitedById], references: [id])
+
+  expiresAt     DateTime
+  acceptedAt    DateTime?
+  createdAt     DateTime     @default(now())
+}
+
+// ============================================
+// TEMPLATES PROMPTS (Globaux, réutilisables)
+// ============================================
+
+model PromptTemplate {
+  id            String    @id @default(cuid())
+  name          String
+  description   String?
+  category      String    // "blog", "ecommerce", "legal", "realestate"
+
+  systemPrompt  String    @db.Text
+  userPrompt    String    @db.Text
+  variables     Json      @default("[]")
+
+  // Stats
+  usageCount    Int       @default(0)
+
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// ============================================
+// PROMPTS (Par client, basés sur templates ou custom)
+// ============================================
+
+model Prompt {
+  id            String    @id @default(cuid())
+  name          String
+  description   String?
+
+  systemPrompt  String    @db.Text
+  userPrompt    String    @db.Text
+  variables     Json      @default("[]")
+
+  // Client associé
+  clientId      String
+  client        Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  // Template source (optionnel)
+  templateId    String?
+
+  isDefault     Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// ============================================
+// ARTICLES
+// ============================================
+
+model Article {
+  id              String        @id @default(cuid())
+
+  // Contenu
+  title           String
+  slug            String
+  content         String        @db.Text
+  excerpt         String?       @db.Text
+  metaTitle       String?
+  metaDescription String?       @db.Text
+  featuredImage   String?
+
+  // SEO
+  targetKeyword   String
+  secondaryKeywords String[]
+  seoScore        Int?
+  seoAnalysis     Json?
+
+  // Status & Planning
+  status          ArticleStatus @default(DRAFT)
+  scheduledAt     DateTime?
+  publishedAt     DateTime?
+
+  // CMS
+  cmsPostId       String?
+  cmsPostUrl      String?
+
+  // Relations
+  clientId        String
+  client          Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  createdById     String
+  createdBy       User          @relation("ArticleCreator", fields: [createdById], references: [id])
+
+  generationJobId String?
+  generationJob   GenerationJob? @relation(fields: [generationJobId], references: [id])
+
+  versions        ArticleVersion[]
+  optimizations   Optimization[]
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@unique([clientId, slug])
+}
+
+// ============================================
+// VERSIONS D'ARTICLES
+// ============================================
+
+model ArticleVersion {
+  id            String    @id @default(cuid())
+  version       Int
+
+  title         String
+  content       String    @db.Text
+  metaTitle     String?
+  metaDescription String? @db.Text
+
+  articleId     String
+  article       Article   @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  createdById   String
+  createdAt     DateTime  @default(now())
+
+  @@unique([articleId, version])
+}
+
+// ============================================
+// GÉNÉRATION EN MASSE (BULK)
+// ============================================
+
+model GenerationJob {
+  id              String    @id @default(cuid())
+
+  clientId        String
+  client          Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  // Données d'entrée
+  keywords        Json      // [{topic, keyword, length}]
+  totalCount      Int
+
+  // Progression
+  status          JobStatus @default(PENDING)
+  completedCount  Int       @default(0)
+  failedCount     Int       @default(0)
+  errorMessages   Json?
+
+  // Résultats
+  articles        Article[]
+
+  createdAt       DateTime  @default(now())
+  startedAt       DateTime?
+  completedAt     DateTime?
+}
+
+// ============================================
+// OPTIMISATIONS & RECOMMANDATIONS
+// ============================================
+
+model Optimization {
+  id            String            @id @default(cuid())
+
+  articleId     String
+  article       Article           @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  type          OptimizationType
+  priority      Priority          @default(MEDIUM)
+  title         String
+  description   String            @db.Text
+  suggestion    String?           @db.Text
+
+  status        OptimizationStatus @default(PENDING)
+
+  createdAt     DateTime          @default(now())
+  resolvedAt    DateTime?
+}
+
+// ============================================
+// ABONNEMENTS & FACTURATION
+// ============================================
+
+model Subscription {
+  id                    String             @id @default(cuid())
+
+  clientId              String             @unique
+  client                Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  // Stripe
+  stripeCustomerId      String             @unique
+  stripeSubscriptionId  String?            @unique
+  stripePriceId         String?
+
+  // Plan
+  plan                  String             @default("starter") // starter, pro, agency
+  status                SubscriptionStatus @default(ACTIVE)
+
+  // Limites
+  articlesPerMonth      Int                @default(10)
+  articlesUsed          Int                @default(0)
+  usersLimit            Int                @default(1)
+
+  // Frais de setup
+  setupFee              Int?               // En centimes
+  setupPaidAt           DateTime?
+
+  // Période
+  currentPeriodStart    DateTime?
+  currentPeriodEnd      DateTime?
+  canceledAt            DateTime?
+
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+}
+
+// ============================================
+// TRACKING USAGE & COÛTS
+// ============================================
+
+model UsageLog {
+  id            String    @id @default(cuid())
+
+  clientId      String
+  client        Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  type          UsageType
+  inputTokens   Int       @default(0)
+  outputTokens  Int       @default(0)
+  cost          Float     // En euros
+
+  articleId     String?
+  metadata      Json?
+
+  createdAt     DateTime  @default(now())
+}
